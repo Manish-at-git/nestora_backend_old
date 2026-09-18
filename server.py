@@ -503,6 +503,7 @@ SCHEMA_SQL = [
       can_view TINYINT(1) DEFAULT 0,
       can_update TINYINT(1) DEFAULT 0,
       can_delete TINYINT(1) DEFAULT 0,
+      sidebar_order INT NOT NULL DEFAULT 0,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (role_id) REFERENCES roles(id) ON DELETE CASCADE,
       FOREIGN KEY (feature_id) REFERENCES features(id) ON DELETE CASCADE,
@@ -1433,6 +1434,7 @@ class RoleFeaturePermissionIn(BaseModel):
     can_view: bool = False
     can_update: bool = False
     can_delete: bool = False
+    sidebar_order: int = Field(default=0, ge=0)
 
 
 class FeaturePermissionItem(BaseModel):
@@ -1441,6 +1443,7 @@ class FeaturePermissionItem(BaseModel):
     can_view: bool = False
     can_update: bool = False
     can_delete: bool = False
+    sidebar_order: int = Field(default=0, ge=0)
 
 
 class BulkRolePermissionsIn(BaseModel):
@@ -2087,13 +2090,13 @@ async def me(account: dict = Depends(get_current_account)):
         perms = await db_fetchall("""
             SELECT f.id as feature_id, f.name as feature_name, f.code as feature_code, 
                    f.parent_id, f.icon, f.url, f.order_index,
-                   p.can_create, p.can_view, p.can_update, p.can_delete
+                   p.can_create, p.can_view, p.can_update, p.can_delete, p.sidebar_order
             FROM role_feature_permissions p
             JOIN features f ON p.feature_id = f.id
             WHERE p.role_id = %s 
               AND f.is_active = 1
               AND (p.can_create = 1 OR p.can_view = 1 OR p.can_update = 1 OR p.can_delete = 1)
-            ORDER BY f.order_index ASC, f.name ASC
+            ORDER BY p.sidebar_order ASC, f.name ASC
         """, (account["role_id"],))
         
         account["role_permissions"] = [
@@ -2105,6 +2108,7 @@ async def me(account: dict = Depends(get_current_account)):
                 "icon": p.get("icon"),
                 "url": p.get("url"),
                 "order_index": p.get("order_index", 0),
+                "sidebar_order": p.get("sidebar_order", 0),
                 "can_create": bool(p["can_create"]),
                 "can_view": bool(p["can_view"]),
                 "can_update": bool(p["can_update"]),
@@ -2129,6 +2133,7 @@ async def me(account: dict = Depends(get_current_account)):
                 "icon": f.get("icon"),
                 "url": f.get("url"),
                 "order_index": f.get("order_index", 0),
+                "sidebar_order": f.get("order_index", 0),
                 "can_create": True,
                 "can_view": True,
                 "can_update": True,
@@ -2974,9 +2979,10 @@ async def create_permission(payload: RoleFeaturePermissionIn, _: dict = Depends(
     if existing:
         raise HTTPException(status_code=400, detail="Permission configuration for this Role and Feature already exists.")
     perm_id = await db_execute(
-        """INSERT INTO role_feature_permissions (role_id, feature_id, can_create, can_view, can_update, can_delete) 
-           VALUES (%s, %s, %s, %s, %s, %s)""",
-        (payload.role_id, payload.feature_id, int(payload.can_create), int(payload.can_view), int(payload.can_update), int(payload.can_delete))
+        """INSERT INTO role_feature_permissions
+           (role_id, feature_id, can_create, can_view, can_update, can_delete, sidebar_order)
+           VALUES (%s, %s, %s, %s, %s, %s, %s)""",
+        (payload.role_id, payload.feature_id, int(payload.can_create), int(payload.can_view), int(payload.can_update), int(payload.can_delete), payload.sidebar_order)
     )
     return {"id": perm_id, **payload.dict()}
 
@@ -2987,9 +2993,9 @@ async def update_permission(item_id: str, payload: RoleFeaturePermissionIn, _: d
         raise HTTPException(status_code=400, detail="Permission configuration for this Role and Feature already exists.")
     await db_execute(
         """UPDATE role_feature_permissions 
-           SET role_id=%s, feature_id=%s, can_create=%s, can_view=%s, can_update=%s, can_delete=%s
+           SET role_id=%s, feature_id=%s, can_create=%s, can_view=%s, can_update=%s, can_delete=%s, sidebar_order=%s
            WHERE id=%s""",
-        (payload.role_id, payload.feature_id, int(payload.can_create), int(payload.can_view), int(payload.can_update), int(payload.can_delete), item_id)
+        (payload.role_id, payload.feature_id, int(payload.can_create), int(payload.can_view), int(payload.can_update), int(payload.can_delete), payload.sidebar_order, item_id)
     )
     return {"id": item_id, **payload.dict()}
 
@@ -3044,7 +3050,8 @@ async def get_role_permissions_matrix(role_id: str, _: dict = Depends(require_ad
             COALESCE(rfp.can_create, 0) AS can_create,
             COALESCE(rfp.can_view, 0) AS can_view,
             COALESCE(rfp.can_update, 0) AS can_update,
-            COALESCE(rfp.can_delete, 0) AS can_delete
+            COALESCE(rfp.can_delete, 0) AS can_delete,
+            COALESCE(rfp.sidebar_order, 0) AS sidebar_order
         FROM features f
         LEFT JOIN features p ON f.parent_id = p.id
         LEFT JOIN role_feature_permissions rfp ON f.id = rfp.feature_id AND rfp.role_id = %s
@@ -3075,9 +3082,10 @@ async def update_role_permissions_bulk(role_id: str, payload: BulkRolePermission
         
         if c or v or u or d:
             await db_execute("""
-                INSERT INTO role_feature_permissions (role_id, feature_id, can_create, can_view, can_update, can_delete)
-                VALUES (%s, %s, %s, %s, %s, %s)
-            """, (role_id, p.feature_id, c, v, u, d))
+                INSERT INTO role_feature_permissions
+                    (role_id, feature_id, can_create, can_view, can_update, can_delete, sidebar_order)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+            """, (role_id, p.feature_id, c, v, u, d, p.sidebar_order))
             
     return {"ok": True, "message": "Permissions updated successfully"}
 
@@ -6580,6 +6588,31 @@ async def get_resident_preapproved(account: dict = Depends(get_current_account))
         if r.get("start_time") is not None: r["start_time"] = str(r["start_time"])
         if r.get("end_time") is not None: r["end_time"] = str(r["end_time"])
     return {"visitors": rows}
+
+@api_router.get("/public/visitor-passes/{pass_code}")
+async def get_public_visitor_pass(pass_code: str):
+    """Return the minimum pass details needed by a shared visitor-pass link."""
+    row = await db_fetchone(
+        """
+        SELECT id, visitor_name, mobile, visitor_type, pass_code, otp,
+               visit_date, start_time, end_time, number_of_visitors,
+               vehicle_number, purpose, pass_type, status
+        FROM pre_approved_visitors
+        WHERE pass_code = %s
+        LIMIT 1
+        """,
+        (pass_code,)
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="Visitor pass not found")
+
+    if row.get("visit_date") is not None:
+        row["visit_date"] = str(row["visit_date"])
+    if row.get("start_time") is not None:
+        row["start_time"] = str(row["start_time"])
+    if row.get("end_time") is not None:
+        row["end_time"] = str(row["end_time"])
+    return row
 
 @api_router.delete("/resident/preapproved-visitors/{pass_id}")
 async def cancel_preapproved_visitor(pass_id: str, account: dict = Depends(get_current_account)):
